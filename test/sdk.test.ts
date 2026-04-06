@@ -996,6 +996,39 @@ describe("embed", () => {
       await store.close();
     }
   });
+
+  test("store.searchVector uses the store-scoped llm instead of the global singleton", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+
+    const fakeLlm = createFakeEmbedLlm();
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.llm = fakeLlm as any;
+
+    try {
+      await store.update();
+      await store.embed();
+
+      setDefaultLlamaCpp({
+        async embed() {
+          throw new Error("global singleton should not be used by store.searchVector");
+        },
+      } as any);
+
+      const results = await store.searchVector("authentication", { limit: 2 });
+      expect(results.length).toBeGreaterThan(0);
+      expect(fakeLlm.embedBatchCalls.length).toBeGreaterThan(0);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
 });
 
 // =============================================================================

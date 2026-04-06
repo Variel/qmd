@@ -15,6 +15,9 @@ import {
   withLLMSession,
   canUnloadLLM,
   SessionReleasedError,
+  OPENAI_TEXT_EMBEDDING_3_SMALL,
+  formatDocForEmbedding,
+  formatQueryForEmbedding,
   type RerankDocument,
   type ILLMSession,
 } from "../src/llm.js";
@@ -157,6 +160,72 @@ describe("LlamaCpp model resolution (config > env > default)", () => {
     } finally {
       if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
       else process.env.QMD_EMBED_MODEL = prev;
+    }
+  });
+
+  test("uses OpenAI embeddings by default when an API key is present", () => {
+    const prevEmbed = process.env.QMD_EMBED_MODEL;
+    const prevApiKey = process.env.OPENAI_API_KEY;
+    delete process.env.QMD_EMBED_MODEL;
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    try {
+      const llm = new LlamaCpp({}) as any;
+      expect(llm.embedModelUri).toBe(OPENAI_TEXT_EMBEDDING_3_SMALL);
+    } finally {
+      if (prevEmbed === undefined) delete process.env.QMD_EMBED_MODEL;
+      else process.env.QMD_EMBED_MODEL = prevEmbed;
+      if (prevApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevApiKey;
+    }
+  });
+});
+
+describe("OpenAI embedding formatting", () => {
+  test("uses raw query text for OpenAI embeddings", () => {
+    expect(formatQueryForEmbedding("한글 검색", OPENAI_TEXT_EMBEDDING_3_SMALL)).toBe("한글 검색");
+  });
+
+  test("preserves title as plain text prefix for OpenAI document embeddings", () => {
+    expect(
+      formatDocForEmbedding("본문", "제목", OPENAI_TEXT_EMBEDDING_3_SMALL)
+    ).toBe("제목\n\n본문");
+  });
+});
+
+describe("LlamaCpp OpenAI embeddings", () => {
+  test("embedBatch calls the OpenAI embeddings API for remote models", async () => {
+    const prevApiKey = process.env.OPENAI_API_KEY;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { index: 0, embedding: [0.1, 0.2, 0.3] },
+            { index: 1, embedding: [0.4, 0.5, 0.6] },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ) as any,
+    );
+
+    process.env.OPENAI_API_KEY = "test-openai-key";
+
+    try {
+      const llm = new LlamaCpp({ embedModel: OPENAI_TEXT_EMBEDDING_3_SMALL });
+      const results = await llm.embedBatch(["안녕", "hello"]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/embeddings");
+      expect(results).toEqual([
+        { embedding: [0.1, 0.2, 0.3], model: OPENAI_TEXT_EMBEDDING_3_SMALL },
+        { embedding: [0.4, 0.5, 0.6], model: OPENAI_TEXT_EMBEDDING_3_SMALL },
+      ]);
+    } finally {
+      fetchMock.mockRestore();
+      if (prevApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevApiKey;
     }
   });
 });

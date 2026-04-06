@@ -77,7 +77,8 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR, resolvePreferredEmbedModelUri, isOpenAIEmbeddingModel } from "../llm.js";
+import { isKoreanSearchShadowIndexFresh, rebuildKoreanSearchShadowIndex } from "../korean-search.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -454,8 +455,9 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
+    const preferredEmbedModel = resolvePreferredEmbedModelUri();
     console.log(`\n${c.bold}Models${c.reset}`);
-    console.log(`  Embedding:   ${hfLink(DEFAULT_EMBED_MODEL_URI)}`);
+    console.log(`  Embedding:   ${isOpenAIEmbeddingModel(preferredEmbedModel) ? `${preferredEmbedModel} (OpenAI)` : hfLink(preferredEmbedModel)}`);
     console.log(`  Reranking:   ${hfLink(DEFAULT_RERANK_MODEL_URI)}`);
     console.log(`  Generation:  ${hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
   }
@@ -545,6 +547,7 @@ async function updateCollections(): Promise<void> {
   }
 
   console.log(`${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`);
+  let koreanIndexNeedsRebuild = !isKoreanSearchShadowIndexFresh(db);
 
   for (let i = 0; i < collections.length; i++) {
     const col = collections[i];
@@ -608,7 +611,16 @@ async function updateCollections(): Promise<void> {
     if (result.orphanedCleaned > 0) {
       console.log(`Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`);
     }
+    if (result.indexed > 0 || result.updated > 0 || result.removed > 0) {
+      koreanIndexNeedsRebuild = true;
+    }
     console.log("");
+  }
+
+  if (koreanIndexNeedsRebuild) {
+    console.log(`${c.dim}Rebuilding Korean search shadow index...${c.reset}`);
+    const koreanIndex = await rebuildKoreanSearchShadowIndex(db);
+    console.log(`${c.dim}Korean search index ready (${koreanIndex.indexedDocuments} docs, ${formatETA(koreanIndex.totalDurationMs / 1000)})${c.reset}\n`);
   }
 
   // Check if any documents need embedding (show once at end)
@@ -1628,6 +1640,12 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
 
+  if (indexed > 0 || updated > 0 || removed > 0 || !isKoreanSearchShadowIndexFresh(db)) {
+    console.log(`${c.dim}Rebuilding Korean search shadow index...${c.reset}`);
+    const koreanIndex = await rebuildKoreanSearchShadowIndex(db);
+    console.log(`${c.dim}Korean search index ready (${koreanIndex.indexedDocuments} docs, ${formatETA(koreanIndex.totalDurationMs / 1000)})${c.reset}`);
+  }
+
   if (needsEmbedding > 0 && !suppressEmbedNotice) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
   }
@@ -1659,7 +1677,7 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
 }
 
 async function vectorIndex(
-  model: string = DEFAULT_EMBED_MODEL_URI,
+  model: string = resolvePreferredEmbedModelUri(),
   force: boolean = false,
   batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy },
 ): Promise<void> {
@@ -3079,7 +3097,7 @@ if (isMain) {
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
-        await vectorIndex(DEFAULT_EMBED_MODEL_URI, !!cli.values.force, {
+        await vectorIndex(resolvePreferredEmbedModelUri(), !!cli.values.force, {
           maxDocsPerBatch,
           maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
           chunkStrategy: embedChunkStrategy,
@@ -3093,7 +3111,7 @@ if (isMain) {
     case "pull": {
       const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
       const models = [
-        DEFAULT_EMBED_MODEL_URI,
+        resolvePreferredEmbedModelUri(),
         DEFAULT_GENERATE_MODEL_URI,
         DEFAULT_RERANK_MODEL_URI,
       ];

@@ -27,6 +27,12 @@ import {
   type RerankDocument,
   type ILLMSession,
 } from "./llm.js";
+import {
+  isKoreanSearchShadowIndexFresh,
+  rebuildKoreanSearchShadowIndex,
+  searchKoreanShadowIndex,
+  shouldUseKoreanSearchShadowIndex,
+} from "./korean-search.js";
 import type {
   NamedCollection,
   Collection,
@@ -1399,7 +1405,8 @@ export async function generateEmbeddings(
   options?: EmbedOptions
 ): Promise<EmbedResult> {
   const db = store.db;
-  const model = options?.model ?? DEFAULT_EMBED_MODEL;
+  const llm = getLlm(store);
+  const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
@@ -1417,9 +1424,11 @@ export async function generateEmbeddings(
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
-  // Use store's LlamaCpp or global singleton, wrapped in a session
-  const llm = getLlm(store);
-  const embedModelUri = llm.embedModelName;
+  const embedModelUri = llm.embedModelName ?? model;
+  const tokenizer =
+    typeof (llm as Partial<Pick<LlamaCpp, "tokenize">>).tokenize === "function"
+      ? llm as Pick<LlamaCpp, "tokenize">
+      : getDefaultLlamaCpp();
 
   // Create a session manager for this llm instance
   const result = await withLLMSessionForLlm(llm, async (session) => {
@@ -1452,6 +1461,7 @@ export async function generateEmbeddings(
           doc.path,
           options?.chunkStrategy,
           session.signal,
+          tokenizer,
         );
 
         for (let seq = 0; seq < chunks.length; seq++) {
@@ -2211,10 +2221,9 @@ export async function chunkDocumentByTokens(
   windowTokens: number = CHUNK_WINDOW_TOKENS,
   filepath?: string,
   chunkStrategy: ChunkStrategy = "regex",
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  tokenizer: Pick<LlamaCpp, "tokenize"> = getDefaultLlamaCpp(),
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
-
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
   // If chunks exceed limit, they'll be re-split with actual ratio
   const avgCharsPerToken = 3;
@@ -2233,7 +2242,7 @@ export async function chunkDocumentByTokens(
     // Respect abort signal to avoid runaway tokenization
     if (signal?.aborted) break;
 
-    const tokens = await llm.tokenize(chunk.text);
+    const tokens = await tokenizer.tokenize(chunk.text);
 
     if (tokens.length <= maxTokens) {
       results.push({ text: chunk.text, pos: chunk.pos, tokens: tokens.length });
@@ -2247,7 +2256,7 @@ export async function chunkDocumentByTokens(
 
       for (const subChunk of subChunks) {
         if (signal?.aborted) break;
-        const subTokens = await llm.tokenize(subChunk.text);
+        const subTokens = await tokenizer.tokenize(subChunk.text);
         results.push({
           text: subChunk.text,
           pos: chunk.pos + subChunk.pos,
@@ -2925,6 +2934,13 @@ export function validateLexQuery(query: string): string | null {
 }
 
 export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string): SearchResult[] {
+  if (shouldUseKoreanSearchShadowIndex(db, query)) {
+    return searchKoreanShadowIndex(db, query, limit, collectionName).map((row) => ({
+      ...row,
+      context: getContextForFile(db, row.filepath),
+    }));
+  }
+
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -4235,23 +4251,26 @@ export async function vectorSearchQuery(
   // Run original + vec/hyde expanded through vector, sequentially — concurrent embed() hangs
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
-  for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, DEFAULT_EMBED_MODEL, limit, collection);
-    for (const r of vecResults) {
-      const existing = allResults.get(r.filepath);
-      if (!existing || r.score > existing.score) {
-        allResults.set(r.filepath, {
-          file: r.filepath,
-          displayPath: r.displayPath,
-          title: r.title,
-          body: r.body || "",
-          score: r.score,
-          context: store.getContextForFile(r.filepath),
-          docid: r.docid,
-        });
+  const llm = getLlm(store);
+  await withLLMSessionForLlm(llm, async (session) => {
+    for (const q of queryTexts) {
+      const vecResults = await store.searchVec(q, llm.embedModelName, limit, collection, session);
+      for (const r of vecResults) {
+        const existing = allResults.get(r.filepath);
+        if (!existing || r.score > existing.score) {
+          allResults.set(r.filepath, {
+            file: r.filepath,
+            displayPath: r.displayPath,
+            title: r.title,
+            body: r.body || "",
+            score: r.score,
+            context: store.getContextForFile(r.filepath),
+            docid: r.docid,
+          });
+        }
       }
     }
-  }
+  });
 
   return Array.from(allResults.values())
     .sort((a, b) => b.score - a.score)

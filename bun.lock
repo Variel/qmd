@@ -8,6 +8,7 @@
         "@modelcontextprotocol/sdk": "1.29.0",
         "better-sqlite3": "12.8.0",
         "fast-glob": "3.3.3",
+        "kiwi-nlp": "0.22.1",
         "node-llama-cpp": "3.18.1",
         "picomatch": "4.0.4",
         "sqlite-vec": "0.1.9",
@@ -460,6 +461,8 @@
     "json-schema-typed": ["json-schema-typed@8.0.2", "", {}, "sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA=="],
 
     "jsonfile": ["jsonfile@6.2.0", "", { "dependencies": { "universalify": "^2.0.0" }, "optionalDependencies": { "graceful-fs": "^4.1.6" } }, "sha512-FGuPw30AdOIUTRMC2OMRtQV+jkVj2cfPqSeWXv1NEAJ1qZ5zb1X6z1mFhbfOB/iy3ssJCD+3KuZ8r8C3uVFlAg=="],
+
+    "kiwi-nlp": ["kiwi-nlp@0.22.1", "", {}, "sha512-NyYsWmlzw3VNluzfwYPfweT+xmhXc6FcFzHYeFo+IiRH2Lo8KcDHP4RYLcRhSx+fbhfWwQansTxkqKTXIO8YIA=="],
 
     "lifecycle-utils": ["lifecycle-utils@3.1.1", "", {}, "sha512-gNd3OvhFNjHykJE3uGntz7UuPzWlK9phrIdXxU9Adis0+ExkwnZibfxCJWiWWZ+a6VbKiZrb+9D9hCQWd4vjTg=="],
 

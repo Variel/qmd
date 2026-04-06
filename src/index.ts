@@ -23,7 +23,6 @@ import {
   structuredSearch,
   extractSnippet,
   addLineNumbers,
-  DEFAULT_EMBED_MODEL,
   DEFAULT_MULTI_GET_MAX_BYTES,
   reindexCollection,
   generateEmbeddings,
@@ -66,7 +65,16 @@ import {
 } from "./store.js";
 import {
   LlamaCpp,
+  withLLMSessionForLlm,
+  OPENAI_TEXT_EMBEDDING_3_SMALL,
+  OPENAI_TEXT_EMBEDDING_3_LARGE,
+  isOpenAIEmbeddingModel,
+  resolvePreferredEmbedModelUri,
 } from "./llm.js";
+import {
+  isKoreanSearchShadowIndexFresh,
+  rebuildKoreanSearchShadowIndex,
+} from "./korean-search.js";
 import {
   setConfigSource,
   loadConfig,
@@ -118,6 +126,12 @@ export { getDefaultDbPath } from "./store.js";
 
 // Re-export Maintenance class for CLI housekeeping operations
 export { Maintenance } from "./maintenance.js";
+export {
+  OPENAI_TEXT_EMBEDDING_3_SMALL,
+  OPENAI_TEXT_EMBEDDING_3_LARGE,
+  isOpenAIEmbeddingModel,
+  resolvePreferredEmbedModelUri,
+} from "./llm.js";
 
 /**
  * Progress info emitted during update() for each file processed.
@@ -417,7 +431,12 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       });
     },
     searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
-    searchVector: async (q, opts) => internal.searchVec(q, DEFAULT_EMBED_MODEL, opts?.limit, opts?.collection),
+    searchVector: async (q, opts) => {
+      const activeLlm = internal.llm ?? llm;
+      return withLLMSessionForLlm(activeLlm, async (session) =>
+        internal.searchVec(q, activeLlm.embedModelName ?? resolvePreferredEmbedModelUri(), opts?.limit, opts?.collection, session)
+      );
+    },
     expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
@@ -500,6 +519,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         totalUpdated += result.updated;
         totalUnchanged += result.unchanged;
         totalRemoved += result.removed;
+      }
+
+      const changed = totalIndexed > 0 || totalUpdated > 0 || totalRemoved > 0;
+      if (changed || !isKoreanSearchShadowIndexFresh(db)) {
+        await rebuildKoreanSearchShadowIndex(db);
       }
 
       return {

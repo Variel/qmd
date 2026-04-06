@@ -1,8 +1,8 @@
 # QMD - Query Markup Documents
 
-An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
+An on-device-first search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. It now supports both local GGUF embeddings and remote OpenAI embeddings, plus a Korean-aware shadow FTS index powered by Kiwi.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -148,11 +148,14 @@ npm install @tobilu/qmd
 #### Quick Start
 
 ```typescript
-import { createStore } from '@tobilu/qmd'
+import { createStore, OPENAI_TEXT_EMBEDDING_3_SMALL } from '@tobilu/qmd'
 
 const store = await createStore({
   dbPath: './my-index.sqlite',
   config: {
+    models: {
+      embed: OPENAI_TEXT_EMBEDDING_3_SMALL,
+    },
     collections: {
       docs: { path: '/path/to/docs', pattern: '**/*.md' },
     },
@@ -176,6 +179,9 @@ import { createStore } from '@tobilu/qmd'
 const store = await createStore({
   dbPath: './index.sqlite',
   config: {
+    models: {
+      embed: 'text-embedding-3-small',
+    },
     collections: {
       docs: { path: '/path/to/docs', pattern: '**/*.md' },
       notes: { path: '/path/to/notes' },
@@ -483,7 +489,7 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
 
 ### GGUF Models (via node-llama-cpp)
 
-QMD uses three local GGUF models (auto-downloaded on first use):
+QMD uses three local GGUF models for query expansion and reranking, and can still use a local GGUF embedding model when desired:
 
 | Model | Purpose | Size |
 |-------|---------|------|
@@ -495,11 +501,20 @@ Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
 
 ### Custom Embedding Model
 
-Override the default embedding model via the `QMD_EMBED_MODEL` environment variable.
-This is useful for multilingual corpora (e.g. Chinese, Japanese, Korean) where
+Override the embedding model via `QMD_EMBED_MODEL`, or simply set `OPENAI_API_KEY` to make QMD prefer `text-embedding-3-small`.
+This is especially useful for multilingual corpora (e.g. Chinese, Japanese, Korean) where
 `embeddinggemma-300M` has limited coverage.
 
 ```sh
+# If OPENAI_API_KEY is present, qmd embed defaults to text-embedding-3-small
+export OPENAI_API_KEY=sk-...
+
+# Optionally point to a proxy / mock endpoint
+export QMD_OPENAI_BASE_URL="https://api.openai.com/v1"
+
+# Or force a specific OpenAI embedding model explicitly
+export QMD_EMBED_MODEL="text-embedding-3-small"
+
 # Use Qwen3-Embedding-0.6B for better multilingual (CJK) support
 export QMD_EMBED_MODEL="hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
 
@@ -508,12 +523,23 @@ qmd embed -f
 ```
 
 Supported model families:
-- **embeddinggemma** (default) — English-optimized, small footprint
+- **text-embedding-3-small** — remote OpenAI embeddings, strong multilingual quality, fastest path for hosted setups
+- **embeddinggemma** — English-optimized, small footprint
 - **Qwen3-Embedding** — Multilingual (119 languages including CJK), MTEB top-ranked
 
 > **Note:** When switching embedding models, you must re-index with `qmd embed -f`
 > since vectors are not cross-compatible between models. The prompt format is
 > automatically adjusted for each model family.
+
+### Korean-aware lexical search
+
+`qmd update` now also rebuilds a Kiwi-backed Korean shadow index. This improves recall for:
+
+- Korean compound nouns like `보안취약점`
+- mixed Korean/English technical terms
+- natural-language Korean queries that previously missed exact substrings
+
+If the shadow index is unavailable or stale, QMD falls back to the legacy FTS index automatically.
 
 ## Installation
 

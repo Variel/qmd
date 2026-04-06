@@ -17,6 +17,94 @@ import {
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { containsHangul } from "./korean.js";
+
+export const OPENAI_TEXT_EMBEDDING_3_SMALL = "text-embedding-3-small";
+export const OPENAI_TEXT_EMBEDDING_3_LARGE = "text-embedding-3-large";
+
+const OPENAI_EMBED_MODEL_NAMES = new Set([
+  OPENAI_TEXT_EMBEDDING_3_SMALL,
+  OPENAI_TEXT_EMBEDDING_3_LARGE,
+  "text-embedding-ada-002",
+]);
+
+export function normalizeEmbeddingModelUri(modelUri: string): string {
+  return modelUri.startsWith("openai:") ? modelUri.slice("openai:".length) : modelUri;
+}
+
+export function isOpenAIEmbeddingModel(modelUri: string): boolean {
+  const normalized = normalizeEmbeddingModelUri(modelUri);
+  return OPENAI_EMBED_MODEL_NAMES.has(normalized);
+}
+
+function hasOpenAIEmbeddingCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.QMD_OPENAI_API_KEY || env.OPENAI_API_KEY);
+}
+
+export function resolvePreferredEmbedModelUri(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.QMD_EMBED_MODEL) {
+    return env.QMD_EMBED_MODEL;
+  }
+  if (hasOpenAIEmbeddingCredentials(env)) {
+    return OPENAI_TEXT_EMBEDDING_3_SMALL;
+  }
+  return DEFAULT_EMBED_MODEL;
+}
+
+function tokenizeOpenAIHeuristically(text: string): LlamaToken[] {
+  const tokens: string[] = [];
+  let asciiBuffer = "";
+
+  const flushAscii = () => {
+    const trimmed = asciiBuffer.trim();
+    if (trimmed) {
+      tokens.push(...(trimmed.match(/[A-Za-z0-9]+(?:[-_./:][A-Za-z0-9]+)*/g) ?? [trimmed]));
+    }
+    asciiBuffer = "";
+  };
+
+  for (const char of text) {
+    if (containsHangul(char)) {
+      flushAscii();
+      tokens.push(char);
+      continue;
+    }
+
+    if (/[A-Za-z0-9._/:+-]/.test(char)) {
+      asciiBuffer += char;
+      continue;
+    }
+
+    flushAscii();
+    if (!/\s/.test(char)) {
+      tokens.push(char);
+    }
+  }
+
+  flushAscii();
+  return tokens.map((_, index) => index as unknown as LlamaToken);
+}
+
+type OpenAIEmbeddingApiConfig = {
+  apiKey: string;
+  baseUrl: string;
+};
+
+function resolveOpenAIEmbeddingApiConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): OpenAIEmbeddingApiConfig {
+  const apiKey = env.QMD_OPENAI_API_KEY || env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OpenAI embedding model selected but no API key was found. Set OPENAI_API_KEY or QMD_OPENAI_API_KEY.",
+    );
+  }
+
+  const baseUrl = (env.QMD_OPENAI_BASE_URL || env.OPENAI_BASE_URL || "https://api.openai.com/v1")
+    .replace(/\/+$/, "");
+
+  return { apiKey, baseUrl };
+}
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -37,6 +125,9 @@ export function isQwen3EmbeddingModel(modelUri: string): boolean {
  */
 export function formatQueryForEmbedding(query: string, modelUri?: string): string {
   const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
+  if (isOpenAIEmbeddingModel(uri)) {
+    return query;
+  }
   if (isQwen3EmbeddingModel(uri)) {
     return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
   }
@@ -50,6 +141,9 @@ export function formatQueryForEmbedding(query: string, modelUri?: string): strin
  */
 export function formatDocForEmbedding(text: string, title?: string, modelUri?: string): string {
   const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
+  if (isOpenAIEmbeddingModel(uri)) {
+    return title ? `${title}\n\n${text}` : text;
+  }
   if (isQwen3EmbeddingModel(uri)) {
     // Qwen3-Embedding: documents are raw text, no task prefix
     return title ? `${title}\n${text}` : text;
@@ -259,6 +353,16 @@ export async function pullModels(
 
   const results: PullResult[] = [];
   for (const model of models) {
+    if (isOpenAIEmbeddingModel(model)) {
+      results.push({
+        model: normalizeEmbeddingModelUri(model),
+        path: "remote://openai/embeddings",
+        sizeBytes: 0,
+        refreshed: false,
+      });
+      continue;
+    }
+
     let refreshed = false;
     const hfRef = parseHfUri(model);
     const filename = model.split("/").pop();
@@ -436,7 +540,7 @@ export class LlamaCpp implements LLM {
 
 
   constructor(config: LlamaCppConfig = {}) {
-    this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
+    this.embedModelUri = config.embedModel || resolvePreferredEmbedModelUri(process.env);
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
     this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
@@ -447,6 +551,14 @@ export class LlamaCpp implements LLM {
 
   get embedModelName(): string {
     return this.embedModelUri;
+  }
+
+  private usesOpenAIEmbeddings(): boolean {
+    return isOpenAIEmbeddingModel(this.embedModelUri);
+  }
+
+  private getOpenAIEmbeddingModelName(): string {
+    return normalizeEmbeddingModelUri(this.embedModelUri);
   }
 
   /**
@@ -602,6 +714,9 @@ export class LlamaCpp implements LLM {
    * Load embedding model (lazy)
    */
   private async ensureEmbedModel(): Promise<LlamaModel> {
+    if (this.usesOpenAIEmbeddings()) {
+      throw new Error("OpenAI embedding models do not use a local llama.cpp embedding model.");
+    }
     if (this.embedModel) {
       return this.embedModel;
     }
@@ -673,6 +788,9 @@ export class LlamaCpp implements LLM {
   private embedContextsCreatePromise: Promise<LlamaEmbeddingContext[]> | null = null;
 
   private async ensureEmbedContexts(): Promise<LlamaEmbeddingContext[]> {
+    if (this.usesOpenAIEmbeddings()) {
+      throw new Error("OpenAI embedding models do not create local embedding contexts.");
+    }
     if (this.embedContexts.length > 0) {
       this.touchActivity();
       return this.embedContexts;
@@ -842,6 +960,9 @@ export class LlamaCpp implements LLM {
    * Returns tokenizer tokens (opaque type from node-llama-cpp)
    */
   async tokenize(text: string): Promise<readonly LlamaToken[]> {
+    if (this.usesOpenAIEmbeddings()) {
+      return tokenizeOpenAIHeuristically(text);
+    }
     await this.ensureEmbedContext();  // Ensure model is loaded
     if (!this.embedModel) {
       throw new Error("Embed model not loaded");
@@ -861,6 +982,9 @@ export class LlamaCpp implements LLM {
    * Detokenize token IDs back to text
    */
   async detokenize(tokens: readonly LlamaToken[]): Promise<string> {
+    if (this.usesOpenAIEmbeddings()) {
+      return "<openai-heuristic-detokenize-unavailable>";
+    }
     await this.ensureEmbedContext();
     if (!this.embedModel) {
       throw new Error("Embed model not loaded");
@@ -879,6 +1003,9 @@ export class LlamaCpp implements LLM {
    * Returns the (possibly truncated) text and whether truncation occurred.
    */
   private async truncateToContextSize(text: string): Promise<{ text: string; truncated: boolean }> {
+    if (this.usesOpenAIEmbeddings()) {
+      return { text, truncated: false };
+    }
     if (!this.embedModel) return { text, truncated: false };
 
     const maxTokens = this.embedModel.trainContextSize;
@@ -894,11 +1021,65 @@ export class LlamaCpp implements LLM {
     return { text: truncatedText, truncated: true };
   }
 
+  private async requestOpenAIEmbeddings(
+    texts: string[],
+    options: EmbedOptions = {},
+  ): Promise<(EmbeddingResult | null)[]> {
+    if (texts.length === 0) return [];
+
+    const { apiKey, baseUrl } = resolveOpenAIEmbeddingApiConfig(process.env);
+    const response = await fetch(`${baseUrl}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: normalizeEmbeddingModelUri(options.model ?? this.getOpenAIEmbeddingModelName()),
+        input: texts,
+        encoding_format: "float",
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        `OpenAI embeddings request failed (${response.status} ${response.statusText})${body ? `: ${body}` : ""}`,
+      );
+    }
+
+    const payload = await response.json() as {
+      data?: Array<{ index?: number; embedding?: number[] }>;
+    };
+
+    const data = payload.data ?? [];
+    const byIndex = new Map<number, number[]>();
+    for (const item of data) {
+      if (typeof item.index === "number" && Array.isArray(item.embedding)) {
+        byIndex.set(item.index, item.embedding);
+      }
+    }
+
+    return texts.map((_, index) => {
+      const embedding = byIndex.get(index);
+      return embedding
+        ? {
+            embedding,
+            model: options.model ?? this.getOpenAIEmbeddingModelName(),
+          }
+        : null;
+    });
+  }
+
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
     try {
+      if (this.usesOpenAIEmbeddings()) {
+        return (await this.requestOpenAIEmbeddings([text], options))[0] ?? null;
+      }
+
       const context = await this.ensureEmbedContext();
 
       // Guard: truncate text that exceeds model context window to prevent GGML crash
@@ -931,6 +1112,10 @@ export class LlamaCpp implements LLM {
     if (texts.length === 0) return [];
 
     try {
+      if (this.usesOpenAIEmbeddings()) {
+        return await this.requestOpenAIEmbeddings(texts, options);
+      }
+
       const contexts = await this.ensureEmbedContexts();
       const n = contexts.length;
 
@@ -1034,6 +1219,9 @@ export class LlamaCpp implements LLM {
   async modelExists(modelUri: string): Promise<ModelInfo> {
     // For HuggingFace URIs, we assume they exist
     // For local paths, check if file exists
+    if (isOpenAIEmbeddingModel(modelUri)) {
+      return { name: normalizeEmbeddingModelUri(modelUri), exists: true };
+    }
     if (modelUri.startsWith("hf:")) {
       return { name: modelUri, exists: true };
     }

@@ -30,6 +30,7 @@
     "search": "tsx src/cli/qmd.ts search",
     "vsearch": "tsx src/cli/qmd.ts vsearch",
     "rerank": "tsx src/cli/qmd.ts rerank",
+    "bench:compare": "tsx src/cli/qmd.ts bench-compare",
     "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
     "release": "./scripts/release.sh"
   },

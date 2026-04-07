@@ -794,6 +794,43 @@ qmd query --json --explain "quarterly reports"
 qmd --index work search "quarterly reports"
 ```
 
+### Benchmarking
+
+QMD ships with two benchmark modes:
+
+- `qmd bench <fixture.json>` for quick quality-only retrieval checks on the current index.
+- `qmd bench-compare <plan.json>` for profile comparisons that include latency, API cost, and retrieval accuracy.
+
+```sh
+# Quality-only benchmark on the current index
+qmd bench src/bench/fixtures/example.json
+
+# Compare local vs remote profiles and save a JSON report
+qmd bench-compare src/bench/fixtures/compare.example.json --output bench-results/latest.json
+```
+
+The comparison runner creates one SQLite index per profile under `.qmd-bench/` by default, prepares each profile with its own model config, and reports:
+
+- average precision / recall / MRR / F1
+- average and p95 latency
+- estimated API cost at search time
+- estimated API cost during preparation (`update` + `embed`)
+
+By default, cost estimates use public list prices for:
+
+- `text-embedding-3-small`
+- `text-embedding-3-large`
+- `text-embedding-ada-002`
+- `rerank-2.5`
+- `rerank-2.5-lite`
+
+You can override any price in CI or locally with environment variables like:
+
+```sh
+export QMD_BENCH_PRICE_TEXT_EMBEDDING_3_SMALL_PER_1M_TOKENS=0.02
+export QMD_BENCH_PRICE_RERANK_2_5_LITE_PER_1M_TOKENS=0.02
+```
+
 ### Index Maintenance
 
 ```sh

@@ -1,0 +1,65 @@
+{
+  "description": "Compare local and remote qmd search profiles on the current configured collection.",
+  "version": 1,
+  "collection": "docs",
+  "db_root": ".qmd-bench",
+  "runs": 3,
+  "warmup_runs": 1,
+  "profiles": [
+    {
+      "name": "bm25-only",
+      "description": "Pure lexical baseline with no embedding or reranking cost.",
+      "mode": "bm25",
+      "prepare": {
+        "update": true,
+        "embed": false
+      }
+    },
+    {
+      "name": "local-full",
+      "description": "Local GGUF embedding + local reranker full pipeline.",
+      "mode": "full",
+      "prepare": {
+        "update": true,
+        "embed": true,
+        "force_embed": true
+      }
+    },
+    {
+      "name": "openai-voyage-full",
+      "description": "OpenAI text-embedding-3-small plus Voyage rerank-2.5-lite.",
+      "mode": "full",
+      "models": {
+        "embed": "text-embedding-3-small",
+        "rerank": "rerank-2.5-lite"
+      },
+      "prepare": {
+        "update": true,
+        "embed": true,
+        "force_embed": true
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "korean-compound",
+      "query": "보안취약점 대응",
+      "type": "semantic",
+      "description": "Korean compound noun recall and reranking.",
+      "expected_files": [
+        "audit.md"
+      ],
+      "expected_in_top_k": 3
+    },
+    {
+      "id": "auth-flow",
+      "query": "JWT 로그인 인증",
+      "type": "exact",
+      "description": "Mixed Korean and API-token retrieval.",
+      "expected_files": [
+        "auth.md"
+      ],
+      "expected_in_top_k": 3
+    }
+  ]
+}

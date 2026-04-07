@@ -2494,6 +2494,7 @@ function parseCLI() {
       xml: { type: "boolean" },
       files: { type: "boolean" },
       json: { type: "boolean" },
+      output: { type: "string" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
       // Collection options
@@ -2712,6 +2713,7 @@ function showHelp(): void {
   console.log("  qmd skill show/install        - Show or install the packaged QMD skill");
   console.log("  qmd mcp                       - Start the MCP server (stdio transport for AI agents)");
   console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file");
+  console.log("  qmd bench-compare <plan.json> - Compare latency, API cost, and accuracy across profiles");
   console.log("");
   console.log("Collections & context:");
   console.log("  qmd collection add/list/remove/rename/show   - Manage indexed folders");
@@ -2778,6 +2780,7 @@ function showHelp(): void {
   console.log("  --full                     - Output full document instead of snippet");
   console.log("  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)");
   console.log("  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)");
+  console.log("  --output <file>            - Save JSON benchmark output to a file");
   console.log("  --line-numbers             - Include line numbers in output");
   console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
   console.log("  --files | --json | --csv | --md | --xml  - Output format");
@@ -3183,8 +3186,25 @@ if (isMain) {
       const { runBenchmark } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
       await runBenchmark(fixturePath, {
-        json: !!(cli.opts as { json?: boolean }).json,
+        json: Boolean(cli.values.json),
         collection: Array.isArray(benchCollection) ? benchCollection[0] : benchCollection,
+      });
+      break;
+    }
+
+    case "bench-compare": {
+      const planPath = cli.args[0];
+      if (!planPath) {
+        console.error("Usage: qmd bench-compare <plan.json> [--json] [--output report.json]");
+        console.error("");
+        console.error("Run profile-based comparison benchmarks with latency, API cost, and accuracy metrics.");
+        console.error("See src/bench/fixtures/compare.example.json for the plan format.");
+        process.exit(1);
+      }
+      const { runComparisonBenchmark } = await import("../bench/compare.js");
+      await runComparisonBenchmark(planPath, {
+        json: Boolean(cli.values.json),
+        output: (cli.values.output as string | undefined) || undefined,
       });
       break;
     }

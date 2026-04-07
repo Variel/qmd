@@ -1,7 +1,8 @@
 /**
  * llm.ts - LLM abstraction layer for QMD using node-llama-cpp
  *
- * Provides embeddings, text generation, and reranking using local GGUF models.
+ * Provides embeddings, text generation, and reranking using local GGUF models
+ * plus remote OpenAI/Voyage providers where configured.
  */
 
 import {
@@ -21,11 +22,22 @@ import { containsHangul } from "./korean.js";
 
 export const OPENAI_TEXT_EMBEDDING_3_SMALL = "text-embedding-3-small";
 export const OPENAI_TEXT_EMBEDDING_3_LARGE = "text-embedding-3-large";
+export const VOYAGE_RERANK_2_5 = "rerank-2.5";
+export const VOYAGE_RERANK_2_5_LITE = "rerank-2.5-lite";
 
 const OPENAI_EMBED_MODEL_NAMES = new Set([
   OPENAI_TEXT_EMBEDDING_3_SMALL,
   OPENAI_TEXT_EMBEDDING_3_LARGE,
   "text-embedding-ada-002",
+]);
+
+const VOYAGE_RERANK_MODEL_NAMES = new Set([
+  VOYAGE_RERANK_2_5,
+  VOYAGE_RERANK_2_5_LITE,
+  "rerank-2",
+  "rerank-2-lite",
+  "rerank-1",
+  "rerank-lite-1",
 ]);
 
 export function normalizeEmbeddingModelUri(modelUri: string): string {
@@ -37,8 +49,21 @@ export function isOpenAIEmbeddingModel(modelUri: string): boolean {
   return OPENAI_EMBED_MODEL_NAMES.has(normalized);
 }
 
+export function normalizeRerankModelUri(modelUri: string): string {
+  return modelUri.startsWith("voyage:") ? modelUri.slice("voyage:".length) : modelUri;
+}
+
+export function isVoyageRerankModel(modelUri: string): boolean {
+  const normalized = normalizeRerankModelUri(modelUri);
+  return VOYAGE_RERANK_MODEL_NAMES.has(normalized);
+}
+
 function hasOpenAIEmbeddingCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(env.QMD_OPENAI_API_KEY || env.OPENAI_API_KEY);
+}
+
+function hasVoyageRerankCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.QMD_VOYAGE_API_KEY || env.VOYAGE_API_KEY);
 }
 
 export function resolvePreferredEmbedModelUri(env: NodeJS.ProcessEnv = process.env): string {
@@ -49,6 +74,16 @@ export function resolvePreferredEmbedModelUri(env: NodeJS.ProcessEnv = process.e
     return OPENAI_TEXT_EMBEDDING_3_SMALL;
   }
   return DEFAULT_EMBED_MODEL;
+}
+
+export function resolvePreferredRerankModelUri(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.QMD_RERANK_MODEL) {
+    return env.QMD_RERANK_MODEL;
+  }
+  if (hasVoyageRerankCredentials(env)) {
+    return VOYAGE_RERANK_2_5_LITE;
+  }
+  return DEFAULT_RERANK_MODEL;
 }
 
 function tokenizeOpenAIHeuristically(text: string): LlamaToken[] {
@@ -102,6 +137,31 @@ function resolveOpenAIEmbeddingApiConfig(
 
   const baseUrl = (env.QMD_OPENAI_BASE_URL || env.OPENAI_BASE_URL || "https://api.openai.com/v1")
     .replace(/\/+$/, "");
+
+  return { apiKey, baseUrl };
+}
+
+type VoyageRerankApiConfig = {
+  apiKey: string;
+  baseUrl: string;
+};
+
+function resolveVoyageRerankApiConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): VoyageRerankApiConfig {
+  const apiKey = env.QMD_VOYAGE_API_KEY || env.VOYAGE_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "Voyage rerank model selected but no API key was found. Set VOYAGE_API_KEY or QMD_VOYAGE_API_KEY.",
+    );
+  }
+
+  const baseUrl = (
+    env.QMD_VOYAGE_BASE_URL
+    || env.VOYAGE_API_BASE_URL
+    || env.VOYAGE_BASE_URL
+    || "https://api.voyageai.com/v1"
+  ).replace(/\/+$/, "");
 
   return { apiKey, baseUrl };
 }
@@ -362,6 +422,15 @@ export async function pullModels(
       });
       continue;
     }
+    if (isVoyageRerankModel(model)) {
+      results.push({
+        model: normalizeRerankModelUri(model),
+        path: "remote://voyage/rerank",
+        sizeBytes: 0,
+        refreshed: false,
+      });
+      continue;
+    }
 
     let refreshed = false;
     const hfRef = parseHfUri(model);
@@ -542,7 +611,7 @@ export class LlamaCpp implements LLM {
   constructor(config: LlamaCppConfig = {}) {
     this.embedModelUri = config.embedModel || resolvePreferredEmbedModelUri(process.env);
     this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
-    this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
+    this.rerankModelUri = config.rerankModel || resolvePreferredRerankModelUri(process.env);
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
     this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
@@ -553,12 +622,24 @@ export class LlamaCpp implements LLM {
     return this.embedModelUri;
   }
 
+  get rerankModelName(): string {
+    return this.rerankModelUri;
+  }
+
   private usesOpenAIEmbeddings(): boolean {
     return isOpenAIEmbeddingModel(this.embedModelUri);
   }
 
   private getOpenAIEmbeddingModelName(): string {
     return normalizeEmbeddingModelUri(this.embedModelUri);
+  }
+
+  private usesVoyageRerank(): boolean {
+    return isVoyageRerankModel(this.rerankModelUri);
+  }
+
+  private getVoyageRerankModelName(): string {
+    return normalizeRerankModelUri(this.rerankModelUri);
   }
 
   /**
@@ -1222,6 +1303,9 @@ export class LlamaCpp implements LLM {
     if (isOpenAIEmbeddingModel(modelUri)) {
       return { name: normalizeEmbeddingModelUri(modelUri), exists: true };
     }
+    if (isVoyageRerankModel(modelUri)) {
+      return { name: normalizeRerankModelUri(modelUri), exists: true };
+    }
     if (modelUri.startsWith("hf:")) {
       return { name: modelUri, exists: true };
     }
@@ -1333,6 +1417,82 @@ export class LlamaCpp implements LLM {
   private static readonly RERANK_TEMPLATE_OVERHEAD = 512;
   private static readonly RERANK_TARGET_DOCS_PER_CONTEXT = 10;
 
+  private async rerankWithVoyage(
+    query: string,
+    documents: RerankDocument[],
+    modelUri: string,
+  ): Promise<RerankResult> {
+    const { apiKey, baseUrl } = resolveVoyageRerankApiConfig();
+    const model = normalizeRerankModelUri(modelUri);
+
+    const documentToIndices = new Map<string, { file: string; index: number }[]>();
+    const uniqueDocuments: string[] = [];
+
+    documents.forEach((doc, index) => {
+      const text = doc.title ? `${doc.title}\n\n${doc.text}` : doc.text;
+      const existing = documentToIndices.get(text);
+      if (existing) {
+        existing.push({ file: doc.file, index });
+      } else {
+        documentToIndices.set(text, [{ file: doc.file, index }]);
+        uniqueDocuments.push(text);
+      }
+    });
+
+    if (uniqueDocuments.length === 0) {
+      return { results: [], model };
+    }
+
+    const response = await fetch(`${baseUrl}/rerank`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        query,
+        documents: uniqueDocuments,
+        truncation: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      throw new Error(
+        `Voyage rerank request failed (${response.status} ${response.statusText}): ${bodyText || "no response body"}`,
+      );
+    }
+
+    const payload = await response.json() as {
+      data?: Array<{ index: number; relevance_score?: number; score?: number }>;
+      results?: Array<{ index: number; relevance_score?: number; score?: number }>;
+    };
+
+    const rankedItems = payload.results ?? payload.data ?? [];
+    const results: RerankDocumentResult[] = [];
+
+    for (const item of rankedItems) {
+      const docText = uniqueDocuments[item.index];
+      if (docText === undefined) continue;
+      const score = item.relevance_score ?? item.score;
+      if (typeof score !== "number") continue;
+      const docInfos = documentToIndices.get(docText) ?? [];
+      for (const docInfo of docInfos) {
+        results.push({
+          file: docInfo.file,
+          score,
+          index: docInfo.index,
+        });
+      }
+    }
+
+    return {
+      results,
+      model,
+    };
+  }
+
   async rerank(
     query: string,
     documents: RerankDocument[],
@@ -1341,6 +1501,11 @@ export class LlamaCpp implements LLM {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
+
+    const requestedModel = options.model ?? this.rerankModelUri;
+    if (isVoyageRerankModel(requestedModel)) {
+      return this.rerankWithVoyage(query, documents, requestedModel);
+    }
 
     const contexts = await this.ensureRerankContexts();
     const model = await this.ensureRerankModel();
@@ -1424,7 +1589,7 @@ export class LlamaCpp implements LLM {
 
     return {
       results,
-      model: this.rerankModelUri,
+      model: requestedModel,
     };
   }
 

@@ -77,7 +77,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR, resolvePreferredEmbedModelUri, isOpenAIEmbeddingModel } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR, resolvePreferredEmbedModelUri, resolvePreferredRerankModelUri, isOpenAIEmbeddingModel, isVoyageRerankModel } from "../llm.js";
 import { isKoreanSearchShadowIndexFresh, rebuildKoreanSearchShadowIndex } from "../korean-search.js";
 import {
   formatSearchResults,
@@ -455,11 +455,23 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
-    const preferredEmbedModel = resolvePreferredEmbedModelUri();
+    const formatModel = (uri: string) => {
+      if (isOpenAIEmbeddingModel(uri)) {
+        return `${uri} (OpenAI)`;
+      }
+      if (isVoyageRerankModel(uri)) {
+        return `${uri} (Voyage)`;
+      }
+      return hfLink(uri);
+    };
+    const config = loadConfig();
+    const preferredEmbedModel = config.models?.embed || resolvePreferredEmbedModelUri();
+    const preferredRerankModel = config.models?.rerank || resolvePreferredRerankModelUri();
+    const preferredGenerateModel = config.models?.generate || DEFAULT_GENERATE_MODEL_URI;
     console.log(`\n${c.bold}Models${c.reset}`);
-    console.log(`  Embedding:   ${isOpenAIEmbeddingModel(preferredEmbedModel) ? `${preferredEmbedModel} (OpenAI)` : hfLink(preferredEmbedModel)}`);
-    console.log(`  Reranking:   ${hfLink(DEFAULT_RERANK_MODEL_URI)}`);
-    console.log(`  Generation:  ${hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
+    console.log(`  Embedding:   ${formatModel(preferredEmbedModel)}`);
+    console.log(`  Reranking:   ${formatModel(preferredRerankModel)}`);
+    console.log(`  Generation:  ${hfLink(preferredGenerateModel)}`);
   }
 
   // Device / GPU info
@@ -3110,10 +3122,11 @@ if (isMain) {
 
     case "pull": {
       const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
+      const config = loadConfig();
       const models = [
-        resolvePreferredEmbedModelUri(),
-        DEFAULT_GENERATE_MODEL_URI,
-        DEFAULT_RERANK_MODEL_URI,
+        config.models?.embed || resolvePreferredEmbedModelUri(),
+        config.models?.generate || DEFAULT_GENERATE_MODEL_URI,
+        config.models?.rerank || resolvePreferredRerankModelUri(),
       ];
       console.log(`${c.bold}Pulling models${c.reset}`);
       const results = await pullModels(models, {

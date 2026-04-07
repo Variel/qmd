@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import * as llmModule from "../src/llm.js";
-import { disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm.js";
+import { disposeDefaultLlamaCpp, setDefaultLlamaCpp, DEFAULT_RERANK_MODEL_URI, VOYAGE_RERANK_2_5_LITE } from "../src/llm.js";
 import {
   createStore,
   verifySqliteVecLoaded,
@@ -49,6 +49,7 @@ import {
   STRONG_SIGNAL_MIN_SCORE,
   STRONG_SIGNAL_MIN_GAP,
   generateEmbeddings,
+  rerank as rerankDocuments,
   type Store,
   type DocumentResult,
   type SearchResult,
@@ -2526,6 +2527,47 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     expect(results).toHaveLength(1);
 
     await cleanupTestDb(store);
+  });
+
+  test("rerank cache keys follow the active rerank model", async () => {
+    const store = await createTestStore();
+    const docs = [{ file: "doc1.md", text: "Content for per-model caching" }];
+
+    const firstRerankSpy = vi.fn(async (_query: string, rerankDocs: { file: string; text: string }[]) => ({
+      results: rerankDocs.map((doc, index) => ({
+        file: doc.file,
+        score: 0.91 - index * 0.1,
+        index,
+      })),
+      model: VOYAGE_RERANK_2_5_LITE,
+    }));
+
+    const secondRerankSpy = vi.fn(async (_query: string, rerankDocs: { file: string; text: string }[]) => ({
+      results: rerankDocs.map((doc, index) => ({
+        file: doc.file,
+        score: 0.41 - index * 0.1,
+        index,
+      })),
+      model: DEFAULT_RERANK_MODEL_URI,
+    }));
+
+    try {
+      await rerankDocuments("cache separation", docs, undefined, store.db, undefined, {
+        rerankModelName: VOYAGE_RERANK_2_5_LITE,
+        rerank: firstRerankSpy,
+      } as any);
+
+      const second = await rerankDocuments("cache separation", docs, undefined, store.db, undefined, {
+        rerankModelName: DEFAULT_RERANK_MODEL_URI,
+        rerank: secondRerankSpy,
+      } as any);
+
+      expect(firstRerankSpy).toHaveBeenCalledTimes(1);
+      expect(secondRerankSpy).toHaveBeenCalledTimes(1);
+      expect(second[0]?.score).toBe(0.41);
+    } finally {
+      await cleanupTestDb(store);
+    }
   });
 
   test("rerank deduplicates identical chunks across files", async () => {

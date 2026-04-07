@@ -16,8 +16,10 @@ import {
   canUnloadLLM,
   SessionReleasedError,
   OPENAI_TEXT_EMBEDDING_3_SMALL,
+  VOYAGE_RERANK_2_5_LITE,
   formatDocForEmbedding,
   formatQueryForEmbedding,
+  normalizeRerankModelUri,
   type RerankDocument,
   type ILLMSession,
 } from "../src/llm.js";
@@ -55,6 +57,14 @@ describe("LlamaCpp.modelExists", () => {
 
     expect(result.exists).toBe(false);
     expect(result.name).toBe("/nonexistent/path/model.gguf");
+  });
+
+  test("returns exists:true for Voyage rerank model URIs", async () => {
+    const llm = getDefaultLlamaCpp();
+    const result = await llm.modelExists(`voyage:${VOYAGE_RERANK_2_5_LITE}`);
+
+    expect(result.exists).toBe(true);
+    expect(result.name).toBe(VOYAGE_RERANK_2_5_LITE);
   });
 });
 
@@ -176,6 +186,22 @@ describe("LlamaCpp model resolution (config > env > default)", () => {
       else process.env.QMD_EMBED_MODEL = prevEmbed;
       if (prevApiKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = prevApiKey;
+    }
+  });
+
+  test("uses Voyage rerank by default when a Voyage API key is present", () => {
+    const prevRerank = process.env.QMD_RERANK_MODEL;
+    const prevApiKey = process.env.VOYAGE_API_KEY;
+    delete process.env.QMD_RERANK_MODEL;
+    process.env.VOYAGE_API_KEY = "test-voyage-key";
+    try {
+      const llm = new LlamaCpp({}) as any;
+      expect(normalizeRerankModelUri(llm.rerankModelUri)).toBe(VOYAGE_RERANK_2_5_LITE);
+    } finally {
+      if (prevRerank === undefined) delete process.env.QMD_RERANK_MODEL;
+      else process.env.QMD_RERANK_MODEL = prevRerank;
+      if (prevApiKey === undefined) delete process.env.VOYAGE_API_KEY;
+      else process.env.VOYAGE_API_KEY = prevApiKey;
     }
   });
 });
@@ -443,6 +469,51 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
   });
 
   describe("rerank", () => {
+    test("calls the Voyage rerank API for remote models", async () => {
+      const prevApiKey = process.env.VOYAGE_API_KEY;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [
+              { index: 1, relevance_score: 0.97 },
+              { index: 0, relevance_score: 0.12 },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ) as any,
+      );
+
+      process.env.VOYAGE_API_KEY = "test-voyage-key";
+
+      try {
+        const llm = new LlamaCpp({ rerankModel: VOYAGE_RERANK_2_5_LITE }) as any;
+        llm._ciMode = false;
+        const result = await llm.rerank("보안 취약점", [
+          { file: "a.md", text: "무관한 문서" },
+          { file: "b.md", text: "보안 취약점 대응 가이드" },
+        ]);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.voyageai.com/v1/rerank");
+        expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+          method: "POST",
+          headers: expect.objectContaining({
+            authorization: "Bearer test-voyage-key",
+          }),
+        });
+        expect(result.model).toBe(VOYAGE_RERANK_2_5_LITE);
+        expect(result.results.map((item: { file: string }) => item.file)).toEqual(["b.md", "a.md"]);
+        expect(result.results[0]?.score).toBe(0.97);
+      } finally {
+        fetchMock.mockRestore();
+        if (prevApiKey === undefined) delete process.env.VOYAGE_API_KEY;
+        else process.env.VOYAGE_API_KEY = prevApiKey;
+      }
+    });
+
     test("scores capital of France question correctly", async () => {
       const query = "What is the capital of France?";
       const documents: RerankDocument[] = [

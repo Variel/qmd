@@ -68,8 +68,12 @@ import {
   withLLMSessionForLlm,
   OPENAI_TEXT_EMBEDDING_3_SMALL,
   OPENAI_TEXT_EMBEDDING_3_LARGE,
+  VOYAGE_RERANK_2_5,
+  VOYAGE_RERANK_2_5_LITE,
   isOpenAIEmbeddingModel,
+  isVoyageRerankModel,
   resolvePreferredEmbedModelUri,
+  resolvePreferredRerankModelUri,
 } from "./llm.js";
 import {
   isKoreanSearchShadowIndexFresh,
@@ -129,8 +133,12 @@ export { Maintenance } from "./maintenance.js";
 export {
   OPENAI_TEXT_EMBEDDING_3_SMALL,
   OPENAI_TEXT_EMBEDDING_3_LARGE,
+  VOYAGE_RERANK_2_5,
+  VOYAGE_RERANK_2_5_LITE,
   isOpenAIEmbeddingModel,
+  isVoyageRerankModel,
   resolvePreferredEmbedModelUri,
+  resolvePreferredRerankModelUri,
 } from "./llm.js";
 
 /**

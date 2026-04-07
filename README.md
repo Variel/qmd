@@ -2,7 +2,7 @@
 
 An on-device-first search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. It now supports both local GGUF embeddings and remote OpenAI embeddings, plus a Korean-aware shadow FTS index powered by Kiwi.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. It now supports local GGUF models, remote OpenAI embeddings, remote Voyage reranking, and a Korean-aware shadow FTS index powered by Kiwi.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -148,13 +148,18 @@ npm install @tobilu/qmd
 #### Quick Start
 
 ```typescript
-import { createStore, OPENAI_TEXT_EMBEDDING_3_SMALL } from '@tobilu/qmd'
+import {
+  createStore,
+  OPENAI_TEXT_EMBEDDING_3_SMALL,
+  VOYAGE_RERANK_2_5_LITE,
+} from '@tobilu/qmd'
 
 const store = await createStore({
   dbPath: './my-index.sqlite',
   config: {
     models: {
       embed: OPENAI_TEXT_EMBEDDING_3_SMALL,
+      rerank: VOYAGE_RERANK_2_5_LITE,
     },
     collections: {
       docs: { path: '/path/to/docs', pattern: '**/*.md' },
@@ -181,6 +186,7 @@ const store = await createStore({
   config: {
     models: {
       embed: 'text-embedding-3-small',
+      rerank: 'rerank-2.5-lite',
     },
     collections: {
       docs: { path: '/path/to/docs', pattern: '**/*.md' },
@@ -489,7 +495,7 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
 
 ### GGUF Models (via node-llama-cpp)
 
-QMD uses three local GGUF models for query expansion and reranking, and can still use a local GGUF embedding model when desired:
+QMD uses local GGUF models for query expansion by default, and can use either local GGUF or remote providers for embeddings and reranking:
 
 | Model | Purpose | Size |
 |-------|---------|------|
@@ -530,6 +536,29 @@ Supported model families:
 > **Note:** When switching embedding models, you must re-index with `qmd embed -f`
 > since vectors are not cross-compatible between models. The prompt format is
 > automatically adjusted for each model family.
+
+### Custom Reranking Model
+
+Override the reranker via `QMD_RERANK_MODEL`, or simply set `VOYAGE_API_KEY` to make QMD prefer `rerank-2.5-lite`.
+
+```sh
+# If VOYAGE_API_KEY is present, qmd query/search defaults to rerank-2.5-lite
+export VOYAGE_API_KEY=pa-...
+
+# Optionally point to a proxy / mock endpoint
+export QMD_VOYAGE_BASE_URL="https://api.voyageai.com/v1"
+
+# Force the higher-quality model explicitly
+export QMD_RERANK_MODEL="rerank-2.5"
+
+# Or stay on the fastest remote default
+export QMD_RERANK_MODEL="rerank-2.5-lite"
+```
+
+Supported rerank families:
+- **rerank-2.5-lite** — remote Voyage reranker, best default for latency-sensitive search
+- **rerank-2.5** — remote Voyage reranker, best default for quality-sensitive search
+- **Qwen3-Reranker GGUF** — local reranking with zero external API calls
 
 ### Korean-aware lexical search
 

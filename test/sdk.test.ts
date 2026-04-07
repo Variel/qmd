@@ -13,6 +13,10 @@ import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import YAML from "yaml";
 import {
   createStore,
+  VOYAGE_RERANK_2_5,
+  VOYAGE_RERANK_2_5_LITE,
+  isVoyageRerankModel,
+  resolvePreferredRerankModelUri,
   type QMDStore,
   type CollectionConfig,
   type StoreOptions,
@@ -1176,6 +1180,21 @@ describe("config initialization", () => {
 // =============================================================================
 
 describe("type exports", () => {
+  test("Voyage rerank helpers are exported", () => {
+    expect(VOYAGE_RERANK_2_5).toBe("rerank-2.5");
+    expect(VOYAGE_RERANK_2_5_LITE).toBe("rerank-2.5-lite");
+    expect(isVoyageRerankModel("voyage:rerank-2.5-lite")).toBe(true);
+
+    const prev = process.env.VOYAGE_API_KEY;
+    process.env.VOYAGE_API_KEY = "test-voyage-key";
+    try {
+      expect(resolvePreferredRerankModelUri()).toBe("rerank-2.5-lite");
+    } finally {
+      if (prev === undefined) delete process.env.VOYAGE_API_KEY;
+      else process.env.VOYAGE_API_KEY = prev;
+    }
+  });
+
   test("StoreOptions type is usable", () => {
     const opts: StoreOptions = {
       dbPath: "/tmp/test.sqlite",
